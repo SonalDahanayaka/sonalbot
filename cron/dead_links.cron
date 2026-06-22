@@ -1,0 +1,3 @@
+# SonalBot Dead Link Archiver
+# Runs daily at 06:00 UTC
+0 6 * * * /data/project/sonalbot/venv/bin/python /data/project/sonalbot/repo/scripts/run_dead_links.py >> /data/project/sonalbot/logs/dead_links.log 2>&1

@@ -1,0 +1,16 @@
+[Unit]
+Description=SonalBot Welcome Bot (24/7)
+After=network.target
+
+[Service]
+Type=simple
+User=sonalbot
+WorkingDirectory=/data/project/sonalbot/repo
+Environment=PYTHONPATH=/data/project/sonalbot/repo
+Environment=PATH=/data/project/sonalbot/venv/bin:/usr/bin:/bin
+ExecStart=/data/project/sonalbot/venv/bin/python scripts/start_welcome.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

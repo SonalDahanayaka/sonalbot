@@ -1,0 +1,4 @@
+pywikibot>=8.0.0
+requests>=2.31.0
+waybackpy>=3.0.6
+colorlog>=6.8.0
