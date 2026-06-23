@@ -20,10 +20,13 @@ class DeadLinkArchiver(SonalBot):
     TIMEOUT = 10
     STATUS_OK = range(200, 400)
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, log_dir: str = None):
+        super().__init__(log_dir=log_dir)
         self.checked = 0
         self.archived = 0
+        self.dead = 0
+        self.errors = 0
+        self.skipped = 0
 
     def check_url(self, url):
         self.api_call(lambda: None)
@@ -41,50 +44,107 @@ class DeadLinkArchiver(SonalBot):
         except Exception:
             return None
 
-    def add_archive(self, item, archive_url, original_url):
-        claim = pywikibot.Claim(self.site, "P1065")
-        claim.setTarget(archive_url)
-        self.api_call(item.addClaim, claim,
-                      summary=f"Archiving dead reference: {original_url} (SonalBot)")
-        self.archived += 1
-        logger.info(f"Archived: {item.id}")
+    def is_already_archived(self, claim, url):
+        """Check if THIS CLAIM already has a reference with P1065 for this URL."""
+        for source in claim.sources:
+            p854_list = source.get("P854", [])
+            if not p854_list:
+                continue
+            if p854_list[0].getTarget() == url and "P1065" in source:
+                return True
+        return False
+
+    def add_archive_to_reference(self, claim, source, archive_url, original_url):
+        """Add P1065 as new reference on same claim."""
+        try:
+            p1065 = pywikibot.Claim(self.site, 'P1065')
+            p1065.setTarget(archive_url)
+            
+            claim.addSource(p1065, summary=f"Adding archive for dead reference: {original_url} (SonalBot)")
+            
+            self.archived += 1
+            logger.info(f"Added archive reference: {original_url}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to add archive: {e}")
+            self.errors += 1
+            return False
 
     def process_item(self, item):
-        for claim in item.claims.get("P854", []):
-            url = claim.getTarget()
-            if not url:
-                continue
-            self.checked += 1
-            alive, status = self.check_url(url)
-            if not alive:
-                archive = self.get_wayback(url)
-                if archive:
-                    self.add_archive(item, archive, url)
+        """Check all references on all claims for P854 URLs."""
+        for prop, claims in item.claims.items():
+            for claim in claims:
+                for source in claim.sources:
+                    p854_claims = source.get("P854", [])
+                    if not p854_claims:
+                        continue
+                    
+                    url = p854_claims[0].getTarget()
+                    if not url:
+                        continue
+                    
+                    # Check if THIS SPECIFIC claim already has archive
+                    if self.is_already_archived(claim, url):
+                        logger.info(f"Already archived on this claim: {url}")
+                        self.skipped += 1
+                        continue
+                    
+                    self.checked += 1
+                    alive, status = self.check_url(url)
+                    if not alive:
+                        self.dead += 1
+                        archive = self.get_wayback(url)
+                        if archive:
+                            self.add_archive_to_reference(claim, source, archive, url)
+                    else:
+                        logger.info(f"Link alive: {url}")
 
     def run(self, limit=500):
         logger.info(f"Starting. Limit: {limit}")
 
-        # Use recent changes to find items with P854 edits
-        # This avoids SPARQL timeout issues
-        count = 0
-        for change in self.site.recentchanges(
-            start=time.strftime('%Y%m%d%H%M%S'),
-            end=(time.time() - 86400),  # Last 24 hours
-            changetype='edit'
-        ):
-            if count >= limit:
-                break
-            try:
-                item = pywikibot.ItemPage(self.site, change['title'])
-                item.get()
-                if 'P854' in item.claims:
-                    self.process_item(item)
-                    count += 1
-            except Exception as e:
-                logger.debug(f"Skip {change['title']}: {e}")
+        query = """
+        SELECT DISTINCT ?item WHERE {
+          ?item ?p ?stmt.
+          ?stmt prov:wasDerivedFrom ?ref.
+          ?ref pr:P854 ?url.
+          FILTER NOT EXISTS {
+            ?stmt prov:wasDerivedFrom ?anyRef.
+            ?anyRef pr:P1065 ?archive.
+          }
+          FILTER (STRSTARTS(STR(?item), "http://www.wikidata.org/entity/Q"))
+        }
+        LIMIT %d
+        """ % limit
 
-        logger.info(f"Done. Checked: {self.checked}, Archived: {self.archived}")
-        return self.checked, self.archived
+        try:
+            from pywikibot.data.sparql import SparqlQuery
+            results = SparqlQuery().select(query, timeout=120)
+            logger.info(f"SPARQL: {len(results)} items")
+        except Exception as e:
+            logger.error(f"SPARQL failed: {e}")
+            results = []
+
+        for row in results:
+            item_id = None
+            try:
+                item_id = row['item'].split('/')[-1]
+                item = pywikibot.ItemPage(self.site, item_id)
+                item.get()
+                self.process_item(item)
+            except Exception as e:
+                logger.error(f"Error {item_id}: {e}")
+                self.errors += 1
+
+        logger.info(f"Done. Checked: {self.checked}, Dead: {self.dead}, Archived: {self.archived}, Skipped: {self.skipped}")
+        return {
+            'checked': self.checked,
+            'dead': self.dead,
+            'archived': self.archived,
+            'skipped': self.skipped,
+            'errors': self.errors,
+            'elapsed_seconds': 0,
+        }
 
 
 if __name__ == "__main__":
